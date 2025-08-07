@@ -1,0 +1,394 @@
+# docker-compose.yml
+version: '3.8'
+
+services:
+  etsi-drift-monitor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "5000:5000"
+    environment:
+      - FLASK_ENV=production
+      - FLASK_APP=api_dashboard.py
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://postgres:password@postgres:5432/drift_monitor
+    volumes:
+      - ./config:/app/config
+      - ./logs:/app/logs
+    depends_on:
+      - redis
+      - postgres
+    restart: unless-stopped
+    networks:
+      - drift-monitor-network
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    networks:
+      - drift-monitor-network
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_DB=drift_monitor
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    restart: unless-stopped
+    networks:
+      - drift-monitor-network
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources
+    restart: unless-stopped
+    networks:
+      - drift-monitor-network
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+    restart: unless-stopped
+    networks:
+      - drift-monitor-network
+
+volumes:
+  redis_data:
+  postgres_data:
+  grafana_data:
+  prometheus_data:
+
+networks:
+  drift-monitor-network:
+    driver: bridge
+
+---
+# Dockerfile
+FROM python:3.9-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements first for better Docker layer caching
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY . .
+
+# Create necessary directories
+RUN mkdir -p logs config templates
+
+# Set environment variables
+ENV FLASK_APP=api_dashboard.py
+ENV FLASK_ENV=production
+ENV PYTHONPATH=/app
+
+# Expose port
+EXPOSE 5000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:5000/health || exit 1
+
+# Run the application
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "4", "--timeout", "60", "api_dashboard:app"]
+
+---
+# requirements.txt
+Flask==2.3.3
+Flask-CORS==4.0.0
+numpy==1.24.3
+pandas==2.0.3
+scikit-learn==1.3.0
+scipy==1.11.1
+gunicorn==21.2.0
+redis==4.6.0
+psycopg2-binary==2.9.7
+prometheus-client==0.17.1
+APScheduler==3.10.4
+
+---
+# config/drift_monitor_config.yaml
+# ETSI Concept Drift Monitor Configuration
+
+# General Settings
+general:
+  service_name: "etsi-concept-drift-monitor"
+  version: "1.0.0"
+  debug: false
+  log_level: "INFO"
+
+# Drift Detection Settings
+drift_detection:
+  # Detection methods to use
+  detection_methods:
+    - "ddm"      # Drift Detection Method
+    - "eddm"     # Early Drift Detection Method  
+    - "adwin"    # Adaptive Windowing
+  
+  # Window size for drift detection
+  window_size: 1000
+  
+  # History size for metrics storage
+  metrics_history_size: 5000
+  
+  # DDM specific parameters
+  ddm:
+    min_num_instances: 30
+    warning_level: 2.0
+    out_control_level: 3.0
+  
+  # EDDM specific parameters
+  eddm:
+    alpha: 0.95
+    beta: 0.9
+    min_num_instances: 30
+  
+  # ADWIN specific parameters
+  adwin:
+    delta: 0.002
+
+# Alert Settings
+alerts:
+  # Threshold values for generating alerts
+  thresholds:
+    performance_decline: 0.05      # 5% decline in performance
+    error_rate_increase: 0.1       # 10% increase in error rate
+    confidence_drop: 0.15          # 15% drop in confidence
+    drift_rate_high: 0.3           # 30% drift rate considered high
+  
+  # Alert destinations
+  destinations:
+    email:
+      enabled: true
+      smtp_server: "smtp.gmail.com"
+      smtp_port: 587
+      username: "alerts@yourcompany.com"
+      password: "${EMAIL_PASSWORD}"
+      recipients:
+        - "ml-team@yourcompany.com"
+        - "devops@yourcompany.com"
+    
+    slack:
+      enabled: true
+      webhook_url: "${SLACK_WEBHOOK_URL}"
+      channel: "#ml-alerts"
+    
+    webhook:
+      enabled: true
+      url: "${WEBHOOK_URL}"
+      headers:
+        Authorization: "Bearer ${WEBHOOK_TOKEN}"
+  
+  # Alert frequency limits
+  rate_limiting:
+    max_alerts_per_model_per_hour: 5
+    max_critical_alerts_per_hour: 10
+
+# Database Settings
+database:
+  # PostgreSQL settings
+  postgresql:
+    host: "${DB_HOST:-localhost}"
+    port: 5432
+    database: "${DB_NAME:-drift_monitor}"
+    username: "${DB_USER:-postgres}"
+    password: "${DB_PASSWORD:-password}"
+    pool_size: 20
+    max_overflow: 30
+  
+  # Redis settings (for caching and session storage)
+  redis:
+    host: "${REDIS_HOST:-localhost}"
+    port: 6379
+    db: 0
+    password: "${REDIS_PASSWORD:-}"
+
+# Monitoring and Metrics
+monitoring:
+  # Prometheus metrics
+  prometheus:
+    enabled: true
+    port: 8000
+    metrics_path: "/metrics"
+  
+  # Health check settings
+  health_check:
+    enabled: true
+    path: "/health"
+    timeout: 10
+  
+  # Performance monitoring
+  performance:
+    track_response_times: true
+    track_memory_usage: true
+    track_cpu_usage: true
+
+# Model Management
+models:
+  # Model registration settings
+  registration:
+    auto_discovery: false
+    require_baseline: true
+    
+  # Model evaluation settings
+  evaluation:
+    batch_size: 1000
+    parallel_processing: true
+    max_workers: 4
+  
+  # Model lifecycle management
+  lifecycle:
+    auto_retrain_threshold: 0.8  # Health score below 80% triggers retraining recommendation
+    backup_model_threshold: 0.5  # Health score below 50% suggests switching to backup
+    deprecation_threshold: 0.3   # Health score below 30% suggests model deprecation
+
+# API Settings
+api:
+  # Rate limiting
+  rate_limiting:
+    enabled: true
+    requests_per_minute: 100
+    burst_size: 20
+  
+  # CORS settings
+  cors:
+    enabled: true
+    origins:
+      - "http://localhost:3000"
+      - "https://yourdomain.com"
+  
+  # Authentication (if enabled)
+  authentication:
+    enabled: false
+    jwt_secret: "${JWT_SECRET}"
+    token_expiry: 3600  # 1 hour
+
+# Logging Configuration
+logging:
+  level: "${LOG_LEVEL:-INFO}"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  
+  # File logging
+  file:
+    enabled: true
+    path: "/app/logs/drift_monitor.log"
+    max_size: "100MB"
+    backup_count: 5
+    rotation: "daily"
+  
+  # Structured logging for ELK stack
+  structured:
+    enabled: true
+    format: "json"
+    fields:
+      - "timestamp"
+      - "level"
+      - "message"
+      - "model_id"
+      - "drift_detected"
+      - "alert_severity"
+
+# Integration Settings
+integrations:
+  # MLflow integration
+  mlflow:
+    enabled: false
+    tracking_uri: "${MLFLOW_TRACKING_URI}"
+    experiment_name: "concept_drift_monitoring"
+  
+  # Kubernetes integration
+  kubernetes:
+    enabled: false
+    namespace: "ml-monitoring"
+    config_map: "drift-monitor-config"
+  
+  # Apache Kafka for event streaming
+  kafka:
+    enabled: false
+    bootstrap_servers: "${KAFKA_BOOTSTRAP_SERVERS}"
+    topics:
+      drift_events: "ml.drift.events"
+      alerts: "ml.alerts"
+      metrics: "ml.metrics"
+
+---
+# prometheus/prometheus.yml
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - "drift_monitor_rules.yml"
+
+scrape_configs:
+  - job_name: 'etsi-drift-monitor'
+    static_configs:
+      - targets: ['etsi-drift-monitor:8000']
+    scrape_interval: 10s
+    metrics_path: /metrics
+
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          - alertmanager:9093
+
+---
+# prometheus/drift_monitor_rules.yml
+groups:
+  - name: drift_monitor_alerts
+    rules:
+      - alert: HighDriftRate
+        expr: drift_detection_rate > 0.3
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High drift rate detected for model {{ $labels.model_id }}"
+          description: "Model {{ $labels.model_id }} has a drift rate of {{ $value }} which is above the threshold"
+
+      - alert: ModelHealthCritical
+        expr: model_health_score < 50
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Model health score critically low for {{ $labels.model_id }}"
+          description: "Model {{ $labels.model_id }} health score is {{ $value }}, immediate attention required"

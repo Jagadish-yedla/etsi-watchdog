@@ -5,3 +5,7 @@ build/
 *.egg-info/
 logs/
 *.csv
+# Python virtual environment
+venv/
+*.pyc
+__pycache__/
