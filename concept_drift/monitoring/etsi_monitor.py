@@ -263,64 +263,110 @@ class ETSIConceptDriftMonitor:
         
         return comparison
     
-    def _generate_alerts(self, model_id: str, drift_results: Dict, 
-                        baseline_comparison: Dict, current_metrics: Dict) -> List[DriftAlert]:
-        """Generate alerts based on drift detection and performance changes"""
-        alerts = []
-        
-        # Concept drift alerts
-        if drift_results['drift_detected']:
+    def _generate_alerts(self, model_id: str, drift_results: Dict,
+                     baseline_comparison: Dict, current_metrics: Dict) -> List[DriftAlert]:
+        """Generate alerts based on drift detection and performance changes, persist to DB safely.
+
+        Returns list of DriftAlert objects (in-memory).
+        """
+        alerts: List[DriftAlert] = []
+
+        # --- Concept drift alerts ---
+        if drift_results.get('drift_detected'):
             severity = self._determine_drift_severity(drift_results, baseline_comparison)
-            
-            alert = DriftAlert(
+
+            # ensure detectors_triggered is a readable string
+            detectors = drift_results.get('detectors_triggered', [])
+            if isinstance(detectors, (list, tuple)):
+                detection_method_str = ', '.join(map(str, detectors))
+            else:
+                detection_method_str = str(detectors)
+
+            alert_obj = DriftAlert(
                 timestamp=datetime.now(),
                 drift_type='concept',
                 severity=severity,
-                detection_method=', '.join(drift_results['detectors_triggered']),
-                confidence_score=0.9,  # Could be calculated based on multiple detectors
+                detection_method=detection_method_str,
+                confidence_score=float(drift_results.get('confidence', 0.9)) if drift_results.get('confidence') is not None else 0.9,
                 affected_model=model_id,
-                metrics=current_metrics,
-                description=f"Concept drift detected by {drift_results['detectors_triggered']}",
+                metrics=current_metrics.copy() if isinstance(current_metrics, dict) else {'metrics': current_metrics},
+                description=f"Concept drift detected by {detection_method_str}",
                 recommended_actions=self._get_drift_recommendations(severity)
             )
-            alerts.append(alert)
-            db = SessionLocal()
-            for alert in alerts:
-                db.add(AlertModel(
-                    timestamp=alert.timestamp,
-                    model_id=alert.affected_model,
-                    drift_type=alert.drift_type,
-                    severity=alert.severity.value,
-                    detection_method=alert.detection_method,
-                    confidence_score=str(alert.confidence_score),
-                    description=alert.description,
-                    metrics=alert.metrics,
-                    recommended_actions=alert.recommended_actions
-                ))
-            db.commit()
-            db.close()
+            alerts.append(alert_obj)
 
-        # Performance degradation alerts
+        # --- Performance degradation alerts ---
         if baseline_comparison.get('has_baseline', False):
-            for metric, change_info in baseline_comparison['changes'].items():
-                if change_info['degraded']:
-                    alert = DriftAlert(
+            for metric, change_info in baseline_comparison.get('changes', {}).items():
+                if change_info.get('degraded', False):
+                    perf_alert = DriftAlert(
                         timestamp=datetime.now(),
                         drift_type='performance',
                         severity=DriftSeverity.MEDIUM,
                         detection_method='baseline_comparison',
-                        confidence_score=abs(change_info['percent_change']) / 100,
+                        confidence_score=float(abs(change_info.get('percent_change', 0)) / 100),
                         affected_model=model_id,
                         metrics={metric: change_info},
-                        description=f"{metric} degraded by {change_info['percent_change']:.2f}%",
+                        description=f"{metric} degraded by {change_info.get('percent_change', 0):.2f}%",
                         recommended_actions=['retrain_model', 'investigate_data_quality']
                     )
-                    alerts.append(alert)
-        
-        # Store alerts
+                    alerts.append(perf_alert)
+
+        # If no alerts, return empty list cheaply
+        if not alerts:
+            return alerts
+
+        # Store alerts in memory
         self.alerts.extend(alerts)
-        
+
+        # Persist alerts to DB in one transaction; on error keep in-memory alerts but log exception
+        db = None
+        try:
+            db = SessionLocal()
+            for a in alerts:
+                # Prepare serializable JSON strings for metrics and recommended_actions
+                try:
+                    metrics_json = json.dumps(a.metrics, default=str) if a.metrics is not None else None
+                except Exception:
+                    metrics_json = json.dumps({'error': 'could not serialize metrics'}, default=str)
+
+                try:
+                    rec_actions_json = json.dumps(a.recommended_actions, default=str) if a.recommended_actions is not None else None
+                except Exception:
+                    rec_actions_json = json.dumps([], default=str)
+
+                # Ensure detection_method is a string
+                detection_method_val = a.detection_method if isinstance(a.detection_method, str) else str(a.detection_method)
+
+                # Create DB model instance (fields assumed present)
+                db_alert = AlertModel(
+                    timestamp=a.timestamp,
+                    model_id=a.affected_model,
+                    drift_type=a.drift_type,
+                    severity=a.severity.value if hasattr(a.severity, 'value') else str(a.severity),
+                    detection_method=detection_method_val,
+                    confidence_score=float(a.confidence_score) if a.confidence_score is not None else None,
+                    description=a.description,
+                    metrics=metrics_json,
+                    recommended_actions=rec_actions_json
+                )
+                db.add(db_alert)
+
+            db.commit()
+        except Exception as exc:
+            # Log but do not crash — keep in-memory alerts available
+            self.logger.exception("Failed to persist alerts to DB: %s", exc)
+            if db is not None:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+        finally:
+            if db is not None:
+                db.close()
+
         return alerts
+
     
     def _determine_drift_severity(self, drift_results: Dict, baseline_comparison: Dict) -> DriftSeverity:
         """Determine the severity of detected drift"""

@@ -16,6 +16,14 @@ prometheus-client==0.17.1
 
 # Scheduling / Utilities
 APScheduler==3.10.4
+<<<<<<< HEAD
 
 # Optional / helpful dev/test tools
 pytest==7.4.0
+=======
+PyYAML==6.0
+SQLAlchemy==2.0.20
+psycopg2-binary==2.9.7
+PyYAML==6.0
+prometheus-client==0.17.1
+>>>>>>> cee7c6e (Save progress: detectors, monitor, endpoints, dashboard)
