@@ -1,3 +1,21 @@
-numpy
-pandas
-scipy
+Flask==2.3.3
+Flask-CORS==4.0.0
+numpy==1.24.3
+pandas==2.0.3
+scikit-learn==1.3.0
+scipy==1.11.1
+gunicorn==21.2.0
+redis==4.6.0
+
+# Database (SQLAlchemy + driver)
+SQLAlchemy==2.0.20
+psycopg2-binary==2.9.7
+
+# Monitoring
+prometheus-client==0.17.1
+
+# Scheduling / Utilities
+APScheduler==3.10.4
+
+# Optional / helpful dev/test tools
+pytest==7.4.0

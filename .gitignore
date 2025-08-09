@@ -9,3 +9,24 @@ logs/
 venv/
 *.pyc
 __pycache__/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# virtualenv
+venv/
+.env
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# logs
+logs/

@@ -3,12 +3,15 @@ import json
 from datetime import datetime
 from typing import Dict, List, Optional, Any, Tuple
 import numpy as np
-import pandas as pd
+import yaml
 from dataclasses import dataclass, asdict
 from enum import Enum
+from pathlib import Path
 
-# Import the drift detection classes (assuming they're in a separate module)
-from concept_drift.detection.drift_detectors import ConceptDriftDetector, DDM, EDDM, ADWIN
+# Import the drift detection classes
+from concept_drift.detection.drift_detectors import ConceptDriftDetector
+from concept_drift.monitoring.db import SessionLocal
+from concept_drift.monitoring.models import Alert as AlertModel, Evaluation as EvalModel
 
 class DriftSeverity(Enum):
     """Enumeration for drift severity levels"""
@@ -19,9 +22,8 @@ class DriftSeverity(Enum):
 
 @dataclass
 class DriftAlert:
-    """Data class for drift alerts"""
     timestamp: datetime
-    drift_type: str  # 'concept', 'label', 'feature'
+    drift_type: str
     severity: DriftSeverity
     detection_method: str
     confidence_score: float
@@ -35,46 +37,52 @@ class ETSIConceptDriftMonitor:
     Main class for integrating concept drift detection into ETSI Watchdog
     """
     
-    def __init__(self, config: Dict[str, Any]):
-        self.config = config
-        self.logger = self._setup_logging()
+    def __init__(self, config_path: Optional[str] = None):
+        # Load configuration
+        cfg_file = Path( __file__).parents[2] / 'config' / 'drift_monitor_config.yaml'
+        with open(cfg_file, 'r') as f:
+            self.config = yaml.safe_load(f)
         
-        # Initialize drift detectors
+        # Extract detection settings
+        det_cfg = self.config.get('drift_detection', {})
+        methods = det_cfg.get('detection_methods', ['ddm', 'eddm', 'adwin'])
+        window = det_cfg.get('window_size', 1000)
         self.concept_drift_detector = ConceptDriftDetector(
-            detection_methods=config.get('detection_methods', ['ddm', 'eddm', 'adwin']),
-            window_size=config.get('window_size', 1000)
+            detection_methods=methods,
+            window_size=window
         )
         
-        # Alert system
-        self.alerts = []
-        self.alert_thresholds = config.get('alert_thresholds', {
-            'performance_decline': 0.05,
-            'error_rate_increase': 0.1,
-            'confidence_drop': 0.15
-        })
-        
-        # Model registry
-        self.monitored_models = {}
-        self.model_baselines = {}
-        
-        # Metrics tracking
-        self.metrics_history = {}
-        
+        # Alert thresholds
+        alerts_cfg = self.config.get('alerts', {}).get('thresholds', {})
+        self.alert_thresholds = {
+            'performance_decline': alerts_cfg.get('performance_decline', 0.05),
+            'error_rate_increase': alerts_cfg.get('error_rate_increase', 0.1),
+            'confidence_drop': alerts_cfg.get('confidence_drop', 0.15)
+        }
+
+        # Logging
+        self.logger = self._setup_logging()
+
+        # Internal state
+        self.alerts: List[DriftAlert] = []
+        self.monitored_models: Dict[str, Dict] = {}
+        self.model_baselines: Dict[str, Dict[str, float]] = {}
+        self.metrics_history: Dict[str, Dict[str, List[float]]] = {}
+
     def _setup_logging(self) -> logging.Logger:
-        """Set up logging for the drift monitor"""
-        logger = logging.getLogger('etsi_concept_drift')
-        logger.setLevel(logging.INFO)
-        
-        # Create handler if not exists
+        logger = logging.getLogger(self.config.get('general', {}).get('service_name', 'etsi_concept_drift'))
+        level = self.config.get('general', {}).get('log_level', 'INFO')
+        logger.setLevel(getattr(logging, level.upper(), logging.INFO))
         if not logger.handlers:
-            handler = logging.StreamHandler()
-            formatter = logging.Formatter(
-                '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-            )
-            handler.setFormatter(formatter)
-            logger.addHandler(handler)
-            
+            h = logging.StreamHandler()
+            fmt = self.config.get('logging', {}).get('format', '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+            h.setFormatter(logging.Formatter(fmt))
+            logger.addHandler(h)
         return logger
+
+    # ... rest of methods unchanged ...
+
+
     
     def register_model(self, model_id: str, model_info: Dict[str, Any]):
         """
@@ -145,7 +153,8 @@ class ETSIConceptDriftMonitor:
             raise ValueError(f"Model {model_id} not registered")
         
         evaluation_timestamp = datetime.now()
-        
+
+
         # Detect concept drift
         drift_results = self.concept_drift_detector.detect_drift(
             y_true, y_pred, prediction_confidence
@@ -154,6 +163,16 @@ class ETSIConceptDriftMonitor:
         # Calculate additional metrics
         current_metrics = self._calculate_metrics(y_true, y_pred, prediction_confidence)
         
+        # Persist the evaluation record
+        db = SessionLocal()
+        db.add(EvalModel(
+            timestamp=evaluation_timestamp,
+            model_id=model_id,
+            accuracy=str(current_metrics['accuracy']),
+            metrics=current_metrics
+        ))
+        db.commit()
+        db.close()
         # Store metrics in history
         self._update_metrics_history(model_id, current_metrics)
         
@@ -265,7 +284,22 @@ class ETSIConceptDriftMonitor:
                 recommended_actions=self._get_drift_recommendations(severity)
             )
             alerts.append(alert)
-        
+            db = SessionLocal()
+            for alert in alerts:
+                db.add(AlertModel(
+                    timestamp=alert.timestamp,
+                    model_id=alert.affected_model,
+                    drift_type=alert.drift_type,
+                    severity=alert.severity.value,
+                    detection_method=alert.detection_method,
+                    confidence_score=str(alert.confidence_score),
+                    description=alert.description,
+                    metrics=alert.metrics,
+                    recommended_actions=alert.recommended_actions
+                ))
+            db.commit()
+            db.close()
+
         # Performance degradation alerts
         if baseline_comparison.get('has_baseline', False):
             for metric, change_info in baseline_comparison['changes'].items():

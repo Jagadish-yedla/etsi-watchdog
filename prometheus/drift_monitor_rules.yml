@@ -1,0 +1,21 @@
+# prometheus/drift_monitor_rules.yml
+groups:
+  - name: drift_monitor_alerts
+    rules:
+      - alert: HighDriftRate
+        expr: drift_detection_rate > 0.3
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High drift rate detected for model {{ $labels.model_id }}"
+          description: "Model {{ $labels.model_id }} has a drift rate of {{ $value }} which is above the threshold"
+
+      - alert: ModelHealthCritical
+        expr: model_health_score < 50
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Model health score critically low for {{ $labels.model_id }}"
+          description: "Model {{ $labels.model_id }} health score is {{ $value }}, immediate attention required"

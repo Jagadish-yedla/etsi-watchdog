@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ETSI Concept Drift Monitor</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background-color: #f5f5f5; }
+        .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; }
+        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin-bottom: 20px; }
+        .metric { text-align: center; padding: 15px; }
+        .metric-value { font-size: 2em; font-weight: bold; color: #333; }
+        .metric-label { color: #666; margin-top: 5px; }
+        .alert-high { border-left: 4px solid #ff4444; }
+        .alert-medium { border-left: 4px solid #ffaa00; }
+        .alert-low { border-left: 4px solid #44ff44; }
+        .status-indicator { display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin-right: 8px; }
+        .status-healthy { background-color: #44ff44; }
+        .status-warning { background-color: #ffaa00; }
+        .status-critical { background-color: #ff4444; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
+        th { background-color: #f8f9fa; }
+        .btn { padding: 8px 16px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        .btn:hover { background-color: #0056b3; }
+        .refresh-btn { float: right; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🔍 ETSI Concept Drift Monitor</h1>
+        <p>Real-time monitoring of machine learning model drift and performance</p>
+        <button class="btn refresh-btn" onclick="refreshDashboard()">Refresh</button>
+    </div>
+    
+    <div class="metrics">
+        <div class="card metric">
+            <div class="metric-value" id="total-models">-</div>
+            <div class="metric-label">Total Models</div>
+        </div>
+        <div class="card metric">
+            <div class="metric-value" id="active-alerts">-</div>
+            <div class="metric-label">Active Alerts</div>
+        </div>
+        <div class="card metric">
+            <div class="metric-value" id="drift-detections">-</div>
+            <div class="metric-label">Drift Detections (24h)</div>
+        </div>
+        <div class="card metric">
+            <div class="metric-value" id="avg-health-score">-</div>
+            <div class="metric-label">Avg Health Score</div>
+        </div>
+    </div>
+    
+    <div class="card">
+        <h2>📊 Registered Models</h2>
+        <table id="models-table">
+            <thead>
+                <tr>
+                    <th>Status</th>
+                    <th>Model ID</th>
+                    <th>Last Evaluation</th>
+                    <th>Total Evaluations</th>
+                    <th>Drift Detections</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody id="models-tbody">
+                <!-- Models will be populated here -->
+            </tbody>
+        </table>
+    </div>
+    
+    <div class="card">
+        <h2>🚨 Recent Alerts</h2>
+        <div id="alerts-container">
+            <!-- Alerts will be populated here -->
+        </div>
+    </div>
+
+    <script>
+        async function loadDashboardData() {
+            try {
+                // Load models
+                const modelsResponse = await fetch('/api/models');
+                const modelsData = await modelsResponse.json();
+                
+                if (modelsData.status === 'success') {
+                    updateModelsTable(modelsData.models);
+                    document.getElementById('total-models').textContent = modelsData.total_count;
+                }
+                
+                // Load alerts
+                const alertsResponse = await fetch('/api/alerts?limit=10');
+                const alertsData = await alertsResponse.json();
+                
+                if (alertsData.status === 'success') {
+                    updateAlertsContainer(alertsData.alerts);
+                    document.getElementById('active-alerts').textContent = alertsData.total_count;
+                }
+                
+                // Calculate drift detections in last 24h
+                const last24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+                const recentAlertsResponse = await fetch(`/api/alerts?start_date=${last24h}`);
+                const recentAlertsData = await recentAlertsResponse.json();
+                
+                if (recentAlertsData.status === 'success') {
+                    const driftAlerts = recentAlertsData.alerts.filter(a => a.drift_type === 'concept');
+                    document.getElementById('drift-detections').textContent = driftAlerts.length;
+                }
+                
+            } catch (error) {
+                console.error('Error loading dashboard data:', error);
+            }
+        }
+        
+        function updateModelsTable(models) {
+            const tbody = document.getElementById('models-tbody');
+            tbody.innerHTML = '';
+            
+            models.forEach(model => {
+                const row = document.createElement('tr');
+                
+                const driftRate = model.total_evaluations > 0 ? 
+                    (model.drift_detections / model.total_evaluations * 100).toFixed(1) : '0';
+                
+                const statusClass = model.drift_detections > model.total_evaluations * 0.3 ? 'status-critical' :
+                                  model.drift_detections > 0 ? 'status-warning' : 'status-healthy';
+                
+                row.innerHTML = `
+                    <td><span class="status-indicator ${statusClass}"></span></td>
+                    <td><a href="/dashboard/model/${model.model_id}">${model.model_id}</a></td>
+                    <td>${model.last_evaluation ? new Date(model.last_evaluation).toLocaleString() : 'Never'}</td>
+                    <td>${model.total_evaluations}</td>
+                    <td>${model.drift_detections} (${driftRate}%)</td>
+                    <td>
+                        <button class="btn" onclick="viewModelDetails('${model.model_id}')">View</button>
+                        <button class="btn" onclick="resetModel('${model.model_id}')" style="background-color: #dc3545;">Reset</button>
+                    </td>
+                `;
+                
+                tbody.appendChild(row);
+            });
+        }
+        
+        function updateAlertsContainer(alerts) {
+            const container = document.getElementById('alerts-container');
+            container.innerHTML = '';
+            
+            if (alerts.length === 0) {
+                container.innerHTML = '<p>No recent alerts</p>';
+                return;
+            }
+            
+            alerts.forEach(alert => {
+                const alertDiv = document.createElement('div');
+                alertDiv.className = `card alert-${alert.severity}`;
+                
+                alertDiv.innerHTML = `
+                    <h4>${alert.drift_type.toUpperCase()} - ${alert.severity.toUpperCase()}</h4>
+                    <p><strong>Model:</strong> ${alert.affected_model}</p>
+                    <p><strong>Time:</strong> ${new Date(alert.timestamp).toLocaleString()}</p>
+                    <p><strong>Description:</strong> ${alert.description}</p>
+                    <p><strong>Detection Method:</strong> ${alert.detection_method}</p>
+                    <p><strong>Recommended Actions:</strong> ${alert.recommended_actions.join(', ')}</p>
+                `;
+                
+                container.appendChild(alertDiv);
+            });
+        }
+        
+        function viewModelDetails(modelId) {
+            window.location.href = `/dashboard/model/${modelId}`;
+        }
+        
+        async function resetModel(modelId) {
+            if (!confirm(`Are you sure you want to reset monitoring for ${modelId}?`)) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/models/${modelId}/reset`, {
+                    method: 'POST'
+                });
+                
+                if (response.ok) {
+                    alert('Model monitoring reset successfully');
+                    refreshDashboard();
+                } else {
+                    alert('Error resetting model monitoring');
+                }
+            } catch (error) {
+                console.error('Error resetting model:', error);
+                alert('Error resetting model monitoring');
+            }
+        }
+        
+        function refreshDashboard() {
+            loadDashboardData();
+        }
+        
+        // Load data on page load
+        document.addEventListener('DOMContentLoaded', loadDashboardData);
+        
+        // Auto-refresh every 30 seconds
+        setInterval(loadDashboardData, 30000);
+    </script>
+</body>
+</html>
+

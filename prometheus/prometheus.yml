@@ -1,0 +1,24 @@
+# prometheus/prometheus.yml
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - "drift_monitor_rules.yml"
+
+scrape_configs:
+  - job_name: 'etsi-drift-monitor'
+    static_configs:
+      - targets: ['etsi-drift-monitor:8000']
+    scrape_interval: 10s
+    metrics_path: /metrics
+
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          - alertmanager:9093
