@@ -14,6 +14,9 @@ from concept_drift.monitoring.models import Alert as AlertModel, Evaluation as E
 # ---- helpers to convert numpy / datetime -> native py types for JSON ----
 import numpy as _np
 from datetime import datetime as _datetime
+# endpoints.py (near the other imports)
+from concept_drift.monitoring.db import SessionLocal
+from concept_drift.monitoring.models import Model as ModelDB
 
 def to_native(obj):
     """Recursively convert numpy types, datetimes, and other non-jsonables to native python types."""
@@ -58,6 +61,17 @@ app = Flask(
     template_folder=os.path.join(DASHBOARD_DIR),
     static_folder=os.path.join(DASHBOARD_DIR, 'static')
 )
+def load_models_from_db(drift_monitor):
+    """Load persisted models from DB into the in-memory drift_monitor."""
+    session = SessionLocal()
+    try:
+        for m in session.query(ModelDB).all():
+            if m.model_id not in drift_monitor.monitored_models:
+                # m.info already JSON-serializable
+                drift_monitor.register_model(m.model_id, m.info or {})
+    finally:
+        session.close()
+
 # Global drift monitor instance
 drift_monitor = None
 
@@ -75,33 +89,72 @@ def initialize_drift_monitor():
         }
     }
     drift_monitor = ETSIConceptDriftMonitor(config)
+    try:
+        load_models_from_db(drift_monitor)
+    except Exception as e:
+        drift_monitor.logger.exception("Failed to load models from DB at startup: %s", e)
 
 # Initialize the global drift_monitor at import time
 initialize_drift_monitor()
 
 # API Endpoints
-
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+from flask import Response
+from concept_drift.monitoring.db import SessionLocal
+from concept_drift.monitoring.models import Model as ModelDB
 @app.route('/api/models', methods=['POST'])
 def register_model():
-    """Register a new model for drift monitoring"""
+    """Register a new model for drift monitoring (in-memory + persist idempotently)."""
+    data = request.get_json() or {}
+    model_id = data.get('model_id')
+    model_info = data.get('model_info', {})
+
+    if not model_id:
+        return jsonify({'error': 'model_id is required'}), 400
+
+    # 1) Register in-memory (this will raise if logic fails)
     try:
-        data = request.get_json()
-        model_id = data.get('model_id')
-        model_info = data.get('model_info', {})
-        
-        if not model_id:
-            return jsonify({'error': 'model_id is required'}), 400
-        
         drift_monitor.register_model(model_id, model_info)
-        
+    except Exception as exc:
+        # If registration fails, return 500
+        drift_monitor.logger.exception("Failed to register model in-memory: %s", exc)
+        return jsonify({'error': 'Failed to register model in memory', 'details': str(exc)}), 500
+
+    # 2) Persist idempotently to DB (best-effort, but rollback on error)
+    session = SessionLocal()
+    try:
+        existing = session.query(ModelDB).filter_by(model_id=model_id).first()
+        if existing:
+            # Optionally update info if changed
+            if existing.info != model_info:
+                existing.info = model_info
+                session.add(existing)
+                session.commit()
+        else:
+            db_model = ModelDB(model_id=model_id, info=model_info)
+            session.add(db_model)
+            session.commit()
+    except Exception as exc:
+        # rollback and log, but don't undo in-memory registration because workers rely on it
+        session.rollback()
+        drift_monitor.logger.exception("Failed to persist model registration for %s: %s", model_id, exc)
+        # still return success to client because in-memory registration succeeded; optionally indicate DB failure
         return jsonify({
-            'status': 'success',
-            'message': f'Model {model_id} registered successfully',
-            'model_id': model_id
+            'status': 'partial_success',
+            'message': f'Model {model_id} registered in memory but failed to persist',
+            'error': str(exc)
         }), 201
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+    return jsonify({'status': 'success', 'message': f'Model {model_id} registered', 'model_id': model_id}), 201
+
+@app.route('/metrics')
+def metrics():
+    return Response(generate_latest(), mimetype=CONTENT_TYPE_LATEST)
+
+
+
 
 @app.route('/api/models/<model_id>/baseline', methods=['POST'])
 def set_model_baseline(model_id):

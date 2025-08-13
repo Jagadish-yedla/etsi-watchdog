@@ -26,4 +26,8 @@ SQLAlchemy==2.0.20
 psycopg2-binary==2.9.7
 PyYAML==6.0
 prometheus-client==0.17.1
+<<<<<<< HEAD
 >>>>>>> cee7c6e (Save progress: detectors, monitor, endpoints, dashboard)
+=======
+
+>>>>>>> fb0c7d5 (checking with rebase)

@@ -1,0 +1,70 @@
+{
+  "id": null,
+  "uid": "drift-monitor",
+  "title": "ETSI Concept Drift Monitor",
+  "tags": ["drift","metrics"],
+  "timezone": "browser",
+  "schemaVersion": 30,
+  "version": 1,
+  "refresh": "10s",
+  "panels": [
+    {
+      "type": "graph",
+      "title": "Evaluations per model (rate / 1m)",
+      "id": 1,
+      "datasource": "Prometheus",
+      "gridPos": {"x":0,"y":0,"w":12,"h":8},
+      "targets": [
+        {
+          "expr": "sum by (model_id) (rate(drift_evaluations_total[1m]))",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "graph",
+      "title": "Drift detections (increase 1h)",
+      "id": 2,
+      "datasource": "Prometheus",
+      "gridPos": {"x":12,"y":0,"w":12,"h":8},
+      "targets": [
+        {
+          "expr": "sum by (model_id) (increase(drift_detections_total[1h]))",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "singlestat",
+      "title": "Alerts total (last 1h)",
+      "id": 3,
+      "datasource": "Prometheus",
+      "gridPos": {"x":0,"y":8,"w":12,"h":6},
+      "targets": [
+        {
+          "expr": "sum(increase(drift_alerts_total[1h]))",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "gauge",
+      "title": "Model health (example panel)",
+      "id": 4,
+      "datasource": "Prometheus",
+      "gridPos": {"x":12,"y":8,"w":12,"h":6},
+      "targets": [
+        {
+          "expr": "model_health_score",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "fieldOptions": {
+          "calcs": ["mean"],
+          "defaults": {"min": 0, "max": 100}
+        }
+      }
+    }
+  ]
+}

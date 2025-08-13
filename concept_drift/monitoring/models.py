@@ -2,6 +2,16 @@
 
 from sqlalchemy import Column, Integer, String, DateTime, JSON
 from .db import Base
+from sqlalchemy import Column, Integer, String, DateTime, JSON
+from .db import Base
+from datetime import datetime
+
+class Model(Base):
+    __tablename__ = "models"
+    id = Column(Integer, primary_key=True, index=True)
+    model_id = Column(String, unique=True, index=True, nullable=False)
+    info = Column(JSON)
+    registered_at = Column(DateTime, default=datetime.utcnow)
 
 class Alert(Base):
     __tablename__ = "alerts"
