@@ -61,6 +61,7 @@ app = Flask(
     template_folder=os.path.join(DASHBOARD_DIR),
     static_folder=os.path.join(DASHBOARD_DIR, 'static')
 )
+CORS(app)
 def load_models_from_db(drift_monitor):
     """Load persisted models from DB into the in-memory drift_monitor."""
     session = SessionLocal()

@@ -22,3 +22,5 @@ PyYAML==6.0
 
 # Tests / Dev
 pytest==7.4.0
+matplotlib
+requests
